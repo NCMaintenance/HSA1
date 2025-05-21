@@ -4,7 +4,7 @@ import plotly.express as px
 from io import BytesIO
 import time # For rate limiting geocoding requests
 
-# Attempt to import geopy and streamlit_folium, provide instructions if missing
+# Attempt to import geopy and streamlit_folium, provide instructions if missing.
 try:
     from geopy.geocoders import Nominatim
     from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
