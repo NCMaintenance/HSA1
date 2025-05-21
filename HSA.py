@@ -4,7 +4,7 @@ import plotly.express as px
 from io import BytesIO
 import time # For rate limiting geocoding requests
 
-# Attempt to import geopy and streamlit_folium, provide instructions if missing.
+# Attempt to import geopy and streamlit_folium, provide instructions if missing
 try:
     from geopy.geocoders import Nominatim
     from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
@@ -85,9 +85,11 @@ def batch_geocode_dataframe(input_df, address_col, lookup_data=None):
         st.warning(f"Address column '{address_col}' not found. Skipping map generation.")
         return input_df, {}
 
+    # Ensure addresses are treated as strings, handling potential NaNs gracefully
     unique_addresses_in_df = input_df[address_col].dropna().astype(str).unique()
+    
     if len(unique_addresses_in_df) == 0:
-        st.info("No addresses found to geocode in the main file.")
+        st.info("No valid (non-empty) addresses found to geocode in the main file.")
         return input_df, {}
 
     st.write(f"Found {len(unique_addresses_in_df)} unique addresses in the main file to process...")
@@ -101,30 +103,30 @@ def batch_geocode_dataframe(input_df, address_col, lookup_data=None):
     lookup_dict = {}
     if lookup_data is not None and not lookup_data.empty:
         if address_col in lookup_data.columns and 'Latitude' in lookup_data.columns and 'Longitude' in lookup_data.columns:
-            # Ensure address column in lookup_dict is string for matching
             lookup_data_copy = lookup_data.copy()
+            # Ensure address column in lookup_dict is string for matching and handle NaNs
             lookup_data_copy[address_col] = lookup_data_copy[address_col].astype(str)
+            # Filter out rows where essential lookup columns might be NaN after conversion
+            lookup_data_copy.dropna(subset=[address_col, 'Latitude', 'Longitude'], inplace=True)
+            
             lookup_dict = pd.Series(
                 list(zip(lookup_data_copy['Latitude'], lookup_data_copy['Longitude'])),
                 index=lookup_data_copy[address_col]
             ).to_dict()
-            st.info(f"Using provided lookup table with {len(lookup_dict)} entries.")
+            st.info(f"Using provided lookup table with {len(lookup_dict)} valid entries.")
         else:
-            st.warning("Lookup table is missing required columns (Address, Latitude, Longitude). It will not be used.")
+            st.warning(f"Lookup table is missing required columns ('{address_col}', 'Latitude', 'Longitude'). It will not be used.")
 
     for i, addr_str in enumerate(unique_addresses_in_df):
-        if not addr_str or pd.isna(addr_str): # Skip if address is empty or NaN
-            address_to_coords[addr_str] = (None, None)
-            continue
-
+        # addr_str is already confirmed to be a non-NaN string from unique_addresses_in_df
         # 1. Try to find in lookup_dict
         if addr_str in lookup_dict:
             lat, lon = lookup_dict[addr_str]
-            # Check if lat/lon from lookup are valid numbers
-            if pd.notna(lat) and pd.notna(lon):
+            if pd.notna(lat) and pd.notna(lon): # Check if lat/lon from lookup are valid
                  address_to_coords[addr_str] = (float(lat), float(lon))
                  found_in_lookup +=1
-            else: # If lookup has invalid coords for this address, try API
+            else: # If lookup has invalid coords for this address (e.g. NaN), try API
+                 # st.info(f"Coordinates for '{addr_str}' in lookup were invalid, trying API.") # Optional debug
                  address_to_coords[addr_str] = geocode_address_via_api(addr_str)
                  if address_to_coords[addr_str] != (None, None): api_calls_made += 1
         else:
@@ -140,6 +142,7 @@ def batch_geocode_dataframe(input_df, address_col, lookup_data=None):
     st.info(f"{api_calls_made} calls made to Nominatim API.")
 
     df_with_coords = input_df.copy()
+    # Map coordinates; ensure mapping key (address) is string
     df_with_coords['Latitude'] = df_with_coords[address_col].astype(str).map(lambda x: address_to_coords.get(x, (None, None))[0])
     df_with_coords['Longitude'] = df_with_coords[address_col].astype(str).map(lambda x: address_to_coords.get(x, (None, None))[1])
     
@@ -164,7 +167,7 @@ def load_data(uploaded_file_obj):
             df.columns = df.columns.str.strip() # Strip whitespace from column names
         return df
     except Exception as e:
-        st.error(f"Error loading file: {e}")
+        st.error(f"Error loading file '{uploaded_file_obj.name}': {e}")
         return None
 
 # --- File Uploader for Main Data ---
@@ -184,83 +187,71 @@ uploaded_lookup_file = st.sidebar.file_uploader(
 )
 
 if uploaded_lookup_file:
-    # Check if it's a new lookup file or the same one to avoid reprocessing
-    # This simple check might not be robust for all cases but works for basic re-upload scenarios
     if st.session_state.lookup_df is None or not hasattr(uploaded_lookup_file, '_uploaded_file_id_lookup') or \
        (hasattr(uploaded_lookup_file, '_uploaded_file_id_lookup') and st.session_state.get('_last_lookup_file_id') != uploaded_lookup_file._uploaded_file_id_lookup):
         with st.spinner("Loading lookup table..."):
-            temp_lookup_df = load_data(uploaded_lookup_file) # Use the same load_data to strip columns
+            temp_lookup_df = load_data(uploaded_lookup_file)
         if temp_lookup_df is not None:
-            # Validate lookup_df
             required_lookup_cols = {ADDRESS_COLUMN_NAME, 'Latitude', 'Longitude'}
             if required_lookup_cols.issubset(temp_lookup_df.columns):
                 st.session_state.lookup_df = temp_lookup_df
                 st.sidebar.success("Lookup table loaded successfully.")
-                st.session_state.geocoding_done = False # Trigger re-geocoding if main file is already loaded
-                if hasattr(uploaded_lookup_file, 'file_id'):
-                    st.session_state._last_lookup_file_id = uploaded_lookup_file.file_id
-                else: # Fallback for older versions or different upload objects
-                    st.session_state._last_lookup_file_id = uploaded_lookup_file.name + str(uploaded_lookup_file.size)
-                # Add an attribute to the file object itself to help track if it's the "same" object instance
-                setattr(uploaded_lookup_file, '_uploaded_file_id_lookup', st.session_state._last_lookup_file_id)
-
+                st.session_state.geocoding_done = False 
+                current_file_id = getattr(uploaded_lookup_file, 'file_id', uploaded_lookup_file.name + str(uploaded_lookup_file.size))
+                st.session_state._last_lookup_file_id = current_file_id
+                setattr(uploaded_lookup_file, '_uploaded_file_id_lookup', current_file_id)
             else:
                 st.sidebar.error(f"Lookup file must contain columns: {', '.join(required_lookup_cols)}.")
-                st.session_state.lookup_df = None # Invalidate if incorrect
+                st.session_state.lookup_df = None
         else:
-            st.session_state.lookup_df = None # Invalidate if loading failed
-elif 'lookup_uploader' in st.session_state and st.session_state.lookup_uploader is None: # If user clears the lookup uploader
+            st.session_state.lookup_df = None
+elif 'lookup_uploader' in st.session_state and st.session_state.lookup_uploader is None: 
     if st.session_state.lookup_df is not None:
         st.session_state.lookup_df = None
         st.sidebar.info("Lookup table cleared.")
-        st.session_state.geocoding_done = False # Trigger re-geocoding
+        st.session_state.geocoding_done = False
 
 # --- Process Main Uploaded File ---
 if uploaded_file:
-    # Check if this is a new file or the same one
+    current_main_file_id = getattr(uploaded_file, 'file_id', uploaded_file.name + str(uploaded_file.size))
     if st.session_state.df is None or not hasattr(uploaded_file, '_uploaded_file_id_main') or \
-       (hasattr(uploaded_file, '_uploaded_file_id_main') and st.session_state.get('_last_uploaded_main_file_id') != uploaded_file._uploaded_file_id_main):
+       (hasattr(uploaded_file, '_uploaded_file_id_main') and st.session_state.get('_last_uploaded_main_file_id') != current_main_file_id):
         
         with st.spinner("Loading main data..."):
             st.session_state.df = load_data(uploaded_file)
         
         if st.session_state.df is not None:
             st.success("Main spreadsheet loaded successfully!")
-            st.session_state.geocoding_done = False # Reset geocoding status for new file
+            st.session_state.geocoding_done = False
             st.session_state.geocoded_df = None
             st.session_state.geocoded_pairs_for_download = {}
-
-            if hasattr(uploaded_file, 'file_id'):
-                 st.session_state._last_uploaded_main_file_id = uploaded_file.file_id
-            else:
-                 st.session_state._last_uploaded_main_file_id = uploaded_file.name + str(uploaded_file.size)
-            setattr(uploaded_file, '_uploaded_file_id_main', st.session_state._last_uploaded_main_file_id)
-
-        else: # Main file loading failed
+            st.session_state._last_uploaded_main_file_id = current_main_file_id
+            setattr(uploaded_file, '_uploaded_file_id_main', current_main_file_id)
+        else: 
             st.session_state.df = None
             st.session_state.geocoded_df = None
             st.session_state.geocoding_done = False
-            st.session_state.file_uploader_key += 1 # Attempt to reset uploader
+            st.session_state.file_uploader_key += 1
             st.rerun()
 
-# --- Perform Geocoding if main data is loaded and geocoding not yet done ---
+# --- Perform Geocoding ---
 if st.session_state.df is not None and not st.session_state.geocoding_done:
     if ADDRESS_COLUMN_NAME in st.session_state.df.columns:
         with st.spinner(f"Processing addresses from '{ADDRESS_COLUMN_NAME}' column..."):
             df_with_coords, geocoded_pairs = batch_geocode_dataframe(
                 st.session_state.df.copy(),
                 ADDRESS_COLUMN_NAME,
-                st.session_state.lookup_df # Pass the loaded lookup_df
+                st.session_state.lookup_df
             )
             st.session_state.geocoded_df = df_with_coords
             st.session_state.geocoded_pairs_for_download = geocoded_pairs
         st.session_state.geocoding_done = True
     else:
-        st.warning(f"Column '{ADDRESS_COLUMN_NAME}' not found in the uploaded file. Map functionality will be unavailable.")
-        st.session_state.geocoded_df = st.session_state.df.copy() # Use original df
-        st.session_state.geocoding_done = True # Mark as done to proceed
+        st.warning(f"Column '{ADDRESS_COLUMN_NAME}' not found in the main file. Map functionality will be unavailable.")
+        st.session_state.geocoded_df = st.session_state.df.copy()
+        st.session_state.geocoding_done = True
 
-# --- Main Application Logic (operates on geocoded_df) ---
+# --- Main Application Logic ---
 current_df_to_use = None
 if st.session_state.geocoding_done and st.session_state.geocoded_df is not None:
     current_df_to_use = st.session_state.geocoded_df.copy()
@@ -271,50 +262,54 @@ if current_df_to_use is not None:
     st.image(LOGO_URL, width=200)
     st.markdown("---")
 
-    required_cols_for_app = {DATE_COLUMN_NAME, THEME_COLUMN_NAME, DIVISION_COLUMN_NAME}
-    if ADDRESS_COLUMN_NAME in df_display.columns: # Address is only needed if map is desired
-        required_cols_for_app.add(ADDRESS_COLUMN_NAME)
-    
-    missing_cols = required_cols_for_app - set(df_display.columns)
-    if missing_cols:
-        st.warning(f"The spreadsheet is missing some expected columns: {', '.join(missing_cols)}. Some features might not work.")
-
+    # Date Column Processing
     date_column_valid = False
     if DATE_COLUMN_NAME in df_display.columns:
-        try:
-            # Ensure it's not all NaNs before attempting conversion
-            if not df_display[DATE_COLUMN_NAME].isnull().all():
-                df_display[DATE_COLUMN_NAME] = pd.to_datetime(df_display[DATE_COLUMN_NAME], errors='coerce')
-                if not df_display[DATE_COLUMN_NAME].isnull().all(): # Check again after coerce
-                    df_display.dropna(subset=[DATE_COLUMN_NAME], inplace=True)
-                    if not df_display.empty: # Check if df is empty after dropna
-                         date_column_valid = True
+        # Create a working copy for date manipulations to avoid SettingWithCopyWarning
+        date_series_original = df_display[DATE_COLUMN_NAME].copy()
+        
+        if not date_series_original.isnull().all():
+            try:
+                # Attempt 1: Parse with dayfirst=True (for dd/mm/yyyy)
+                parsed_dates = pd.to_datetime(date_series_original, dayfirst=True, errors='coerce')
+                
+                # Attempt 2: If all were NaT, try default parsing as a fallback
+                if parsed_dates.isnull().all() and not date_series_original.isnull().all(): # Check original wasn't all null
+                    st.info(f"Initial date parsing (dd/mm/yyyy) failed for all entries in '{DATE_COLUMN_NAME}'. Trying general format inference.")
+                    parsed_dates = pd.to_datetime(date_series_original, errors='coerce')
+
+                # Assign back to df_display if parsing was successful for at least some
+                if not parsed_dates.isnull().all():
+                    df_display[DATE_COLUMN_NAME] = parsed_dates
+                    df_display.dropna(subset=[DATE_COLUMN_NAME], inplace=True) # Remove rows where date is NaT
+                    if not df_display.empty:
+                        date_column_valid = True
                     else:
-                        st.warning(f"All rows were removed after attempting to parse dates in '{DATE_COLUMN_NAME}'. No valid dates found.")
+                        st.warning(f"No valid dates remained in '{DATE_COLUMN_NAME}' after parsing and cleaning. Date filtering disabled.")
                 else:
-                    st.warning(f"Could not parse any dates in the '{DATE_COLUMN_NAME}' column (all became NaT).")
-            else:
-                st.info(f"'{DATE_COLUMN_NAME}' column is present but contains all empty values.")
-        except Exception as e:
-            st.warning(f"Error processing '{DATE_COLUMN_NAME}' column: {e}. Date filtering may be unavailable.")
+                    st.warning(f"Could not parse any valid dates in '{DATE_COLUMN_NAME}'. Please check format (e.g., dd/mm/yyyy). Date filtering disabled.")
+            except Exception as e:
+                st.warning(f"Error processing '{DATE_COLUMN_NAME}' column: {e}. Date filtering may be unavailable.")
+        else:
+            st.info(f"'{DATE_COLUMN_NAME}' column is present but contains all empty/null values. Date filtering disabled.")
+    else:
+        st.info(f"'{DATE_COLUMN_NAME}' column not found. Date filtering disabled.")
     
     # --- Sidebar Filters ---
     st.sidebar.header("Filters")
 
-    # Date Filter
     selected_date_range = None
     if date_column_valid and not df_display[DATE_COLUMN_NAME].empty:
+        # Ensure min/max are calculated on the now cleaned and validated date column
         min_dt_val = df_display[DATE_COLUMN_NAME].min()
         max_dt_val = df_display[DATE_COLUMN_NAME].max()
 
-        if pd.isna(min_dt_val) or pd.isna(max_dt_val):
-            st.sidebar.warning(f"Could not determine a valid date range from '{DATE_COLUMN_NAME}'.")
-        else:
+        if pd.notna(min_dt_val) and pd.notna(max_dt_val): # Check if min/max are valid dates
             min_date = min_dt_val.date()
             max_date = max_dt_val.date()
             
             default_start_date, default_end_date = min_date, max_date
-            if min_date > max_date: # Should not happen with proper data
+            if min_date > max_date: 
                 st.sidebar.warning("Min date is after max date in the data. Using swapped values for filter.")
                 default_start_date, default_end_date = max_date, min_date
             
@@ -322,25 +317,26 @@ if current_df_to_use is not None:
                 selected_date_range = st.sidebar.date_input(
                     "Select Date Range",
                     value=(default_start_date, default_end_date),
-                    min_value=min_date, # Actual min from data
-                    max_value=max_date, # Actual max from data
+                    min_value=min_date, 
+                    max_value=max_date,
                     key="date_filter"
                 )
-                if len(selected_date_range) != 2:
+                if len(selected_date_range) != 2: # Should be tuple of two dates
                     selected_date_range = (default_start_date, default_end_date)
             except Exception as e:
-                st.sidebar.error(f"Error initializing date filter: {e}")
+                st.sidebar.error(f"Error initializing date filter: {e}. Defaulting to full range.")
                 selected_date_range = (default_start_date, default_end_date)
-    else:
-        st.sidebar.info(f"'{DATE_COLUMN_NAME}' column not available/valid for date filtering.")
+        else:
+            st.sidebar.warning(f"Could not determine a valid min/max date range from '{DATE_COLUMN_NAME}' after processing. Date filter may be incorrect.")
+    # No else here, if not date_column_valid, the previous info/warning messages cover it.
 
-    # Division Filter (now before Theme)
+    # Division Filter
     selected_divisions = []
     if DIVISION_COLUMN_NAME in df_display.columns and not df_display[DIVISION_COLUMN_NAME].dropna().empty:
         unique_divisions = sorted(df_display[DIVISION_COLUMN_NAME].dropna().astype(str).unique())
         selected_divisions = st.sidebar.multiselect(f"Select {DIVISION_COLUMN_NAME}(s)", options=unique_divisions, default=unique_divisions, key="division_filter")
     else:
-        st.sidebar.info(f"'{DIVISION_COLUMN_NAME}' column not available for filtering.")
+        st.sidebar.info(f"'{DIVISION_COLUMN_NAME}' column not available/valid for filtering.")
 
     # Theme Filter
     selected_themes = []
@@ -348,19 +344,22 @@ if current_df_to_use is not None:
         unique_themes = sorted(df_display[THEME_COLUMN_NAME].dropna().astype(str).unique())
         selected_themes = st.sidebar.multiselect(f"Select {THEME_COLUMN_NAME}(s)", options=unique_themes, default=unique_themes, key="theme_filter")
     else:
-        st.sidebar.info(f"'{THEME_COLUMN_NAME}' column not available for filtering.")
+        st.sidebar.info(f"'{THEME_COLUMN_NAME}' column not available/valid for filtering.")
 
     # --- Filtering Logic ---
     filtered_df_display = df_display.copy()
 
     if selected_date_range and date_column_valid and len(selected_date_range) == 2:
-        start_date = pd.to_datetime(selected_date_range[0])
-        end_date = pd.to_datetime(selected_date_range[1])
-        # Ensure comparison is between datetime objects
-        filtered_df_display = filtered_df_display[
-            (pd.to_datetime(filtered_df_display[DATE_COLUMN_NAME]) >= start_date) &
-            (pd.to_datetime(filtered_df_display[DATE_COLUMN_NAME]) <= end_date)
-        ]
+        try:
+            start_date = pd.to_datetime(selected_date_range[0])
+            end_date = pd.to_datetime(selected_date_range[1])
+            # Ensure the column being filtered is also datetime
+            filtered_df_display = filtered_df_display[
+                (pd.to_datetime(filtered_df_display[DATE_COLUMN_NAME]) >= start_date) &
+                (pd.to_datetime(filtered_df_display[DATE_COLUMN_NAME]) <= end_date)
+            ]
+        except Exception as e:
+            st.error(f"Error applying date filter: {e}")
     
     if selected_divisions and DIVISION_COLUMN_NAME in filtered_df_display.columns:
         filtered_df_display = filtered_df_display[filtered_df_display[DIVISION_COLUMN_NAME].isin(selected_divisions)]
@@ -413,7 +412,7 @@ if current_df_to_use is not None:
                 st.info(f"Displaying the first 1000 out of {len(map_df)} geocoded points on the map for performance.")
 
             for idx, row in points_to_plot.iterrows():
-                popup_text = f"<b>{ADDRESS_COLUMN_NAME}:</b> {row[ADDRESS_COLUMN_NAME]}"
+                popup_text = f"<b>{ADDRESS_COLUMN_NAME}:</b> {row.get(ADDRESS_COLUMN_NAME, 'N/A')}"
                 if THEME_COLUMN_NAME in row and pd.notna(row[THEME_COLUMN_NAME]):
                     popup_text += f"<br><b>{THEME_COLUMN_NAME}:</b> {row[THEME_COLUMN_NAME]}"
                 if DIVISION_COLUMN_NAME in row and pd.notna(row[DIVISION_COLUMN_NAME]):
@@ -427,22 +426,21 @@ if current_df_to_use is not None:
             st_folium(m, width='100%', height=500, key="folium_map")
         elif ADDRESS_COLUMN_NAME not in df_display.columns:
              st.info(f"The '{ADDRESS_COLUMN_NAME}' column was not found, so the map cannot be generated.")
-        elif not filtered_df_display.empty and map_df.empty: # Data exists, but no valid coords after filtering/geocoding
+        elif not filtered_df_display.empty and map_df.empty:
             st.warning("No valid geocoded locations to display on the map for the current filter selection, or all addresses failed/yielded no coordinates.")
-        else: # No data after filtering, or initial state
+        else: 
             st.info("Apply filters or upload data with addresses to see locations on the map.")
-    else: # Latitude/Longitude columns don't exist (e.g., geocoding not run or failed, or no address col)
-        if ADDRESS_COLUMN_NAME in df_display.columns:
+    else: 
+        if ADDRESS_COLUMN_NAME in df_display.columns: # Address col exists but no Lat/Lon yet
              st.info("Map will appear once addresses are processed and geocoded successfully.")
-        else:
-            st.info(f"To see a map, please ensure your spreadsheet has an '{ADDRESS_COLUMN_NAME}' column.")
+        # else: # No address col at all, covered by initial file load warnings
+            # st.info(f"To see a map, please ensure your spreadsheet has an '{ADDRESS_COLUMN_NAME}' column.")
 
     # --- Download Button for Geocoded Pairs ---
     if st.session_state.get('geocoded_pairs_for_download'):
-        # Prepare data for download
         dl_df_data = []
         for addr, (lat, lon) in st.session_state.geocoded_pairs_for_download.items():
-            if lat is not None and lon is not None: # Only include successfully geocoded pairs
+            if lat is not None and lon is not None:
                 dl_df_data.append({ADDRESS_COLUMN_NAME: addr, 'Latitude': lat, 'Longitude': lon})
         
         if dl_df_data:
@@ -455,16 +453,14 @@ if current_df_to_use is not None:
                 mime="text/csv",
                 key="download_geocoded_csv"
             )
-        else:
-            st.sidebar.info("No successfully geocoded addresses to download from the current main file.")
+        # else: # No need for an else, if no data, button just won't show.
+            # st.sidebar.info("No successfully geocoded addresses to download from the current main file.")
 
-
-    # Optional: Display filtered data table
     if st.checkbox("Show Filtered Data Table", key="show_data_table"):
         st.subheader("Filtered Data (with Latitude/Longitude if available)")
         st.dataframe(filtered_df_display, use_container_width=True)
 
-elif not uploaded_file : # Only show welcome if no main file is uploaded yet
+elif not uploaded_file : 
     st.info("Please upload a main spreadsheet to begin analysis.")
     st.markdown(f"""
         ### Welcome to the Spreadsheet Analysis Dashboard!
@@ -478,32 +474,28 @@ elif not uploaded_file : # Only show welcome if no main file is uploaded yet
 # --- Reset Button ---
 if st.session_state.df is not None or st.session_state.geocoded_df is not None:
     if st.sidebar.button("Clear All Data and Reset App", key="clear_data"):
-        # Clear main data related states
         st.session_state.df = None
         st.session_state.geocoded_df = None
         st.session_state.geocoding_done = False
         st.session_state.geocoded_pairs_for_download = {}
-        st.session_state.file_uploader_key += 1 # Resets the main file uploader
+        st.session_state.file_uploader_key += 1
         
-        # Clear lookup data related states
         st.session_state.lookup_df = None
-        if 'lookup_uploader' in st.session_state: # Reset lookup file uploader by clearing its state
+        if 'lookup_uploader' in st.session_state:
             st.session_state.lookup_uploader = None 
         if '_last_lookup_file_id' in st.session_state:
             del st.session_state['_last_lookup_file_id']
-
-
-        # Clear filter states and other UI component states by their keys
+        if '_last_uploaded_main_file_id' in st.session_state:
+            del st.session_state['_last_uploaded_main_file_id']
+            
         keys_to_clear_from_session = [
             "date_filter", "theme_filter", "division_filter", 
-            "show_data_table", "_last_uploaded_main_file_id",
-            "folium_map" # Clear map state if needed
+            "show_data_table", "folium_map"
         ]
         for key in keys_to_clear_from_session:
             if key in st.session_state:
                 del st.session_state[key]
         
-        # Clear geopy API cache (optional, if you want to force re-geocoding from API on next identical addresses)
-        # geocode_address_via_api.clear()
+        # geocode_address_via_api.clear() # Consider if cache clearing is desired on full reset
         st.success("Application reset. Please upload new files.")
         st.rerun()
