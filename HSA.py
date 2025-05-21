@@ -254,9 +254,8 @@ if current_df_to_use is not None:
         
         if not date_series_original.isnull().all():
             try:
-                parsed_dates = pd.to_datetime(date_series_original, dayfirst=True, errors='coerce')
-                if parsed_dates.isnull().all() and not date_series_original.isnull().all():
-                    parsed_dates = pd.to_datetime(date_series_original, errors='coerce')
+                parsed_dates = pd.to_datetime(date_series_original, infer_datetime_format=True, errors='coerce')
+
 
                 if not parsed_dates.isnull().all():
                     # Update the specific column in df_display, not the whole df_display yet
