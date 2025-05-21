@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from io import BytesIO
-import time # For rate limiting geocoding requests
-import datetime # Added for explicit date object checks
+import time
+import datetime
 
-# Attempt to import geopy and streamlit_folium, provide instructions if missing
+# --- Imports for geocoding and maps ---
 try:
     from geopy.geocoders import Nominatim
     from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
@@ -22,40 +22,33 @@ except ImportError:
 
 # --- Configuration ---
 LOGO_URL = "https://www.esther.ie/wp-content/uploads/2022/05/HSE-Logo-Green-NEW-no-background.png"
-# Column names are expected AFTER stripping whitespace
 ADDRESS_COLUMN_NAME = "Site Address"
 DATE_COLUMN_NAME = "Date of Inspection"
 THEME_COLUMN_NAME = "Theme"
 DIVISION_COLUMN_NAME = "Division"
 
-# Page configuration
 st.set_page_config(layout="wide", page_title="Spreadsheet Analysis Dashboard with Map")
 
 # --- Session State Initialization ---
 if 'df' not in st.session_state:
-    st.session_state.df = None # Original uploaded dataframe
+    st.session_state.df = None
 if 'geocoded_df' not in st.session_state:
-    st.session_state.geocoded_df = None # DataFrame with latitude/longitude
+    st.session_state.geocoded_df = None
 if 'file_uploader_key' not in st.session_state:
     st.session_state.file_uploader_key = 0
 if 'geocoding_done' not in st.session_state:
     st.session_state.geocoding_done = False
 if 'lookup_df' not in st.session_state:
-    st.session_state.lookup_df = None # For storing uploaded lookup table
+    st.session_state.lookup_df = None
 if 'geocoded_pairs_for_download' not in st.session_state:
-    st.session_state.geocoded_pairs_for_download = {} # Stores {address: (lat,lon)} for download
+    st.session_state.geocoded_pairs_for_download = {}
 
 # --- Geocoding Function ---
-@st.cache_data(show_spinner=False) # Cache results of geocoding for unique addresses (API calls)
+@st.cache_data(show_spinner=False)
 def geocode_address_via_api(address_string, attempt=1, max_attempts=3):
-    """
-    Converts an address string to latitude and longitude using Nominatim API.
-    Includes basic error handling, retries, and respects rate limits.
-    """
-    geolocator = Nominatim(user_agent=f"streamlit_dashboard_app_{int(time.time())}") # More unique user agent
-
+    geolocator = Nominatim(user_agent=f"streamlit_dashboard_app_{int(time.time())}")
     try:
-        time.sleep(1) # IMPORTANT: Nominatim usage policy: max 1 request per second.
+        time.sleep(1)
         location = geolocator.geocode(address_string, timeout=10)
         if location:
             return (location.latitude, location.longitude)
@@ -77,24 +70,17 @@ def geocode_address_via_api(address_string, attempt=1, max_attempts=3):
         return (None, None)
 
 def batch_geocode_dataframe(input_df, address_col, lookup_data=None):
-    """
-    Geocodes unique addresses from a DataFrame column.
-    Uses lookup_data first, then falls back to API geocoding.
-    Returns the DataFrame with 'Latitude' and 'Longitude' columns, and a dict of geocoded pairs.
-    """
     if address_col not in input_df.columns:
         st.warning(f"Address column '{address_col}' not found. Skipping map generation.")
         return input_df, {}
 
     unique_addresses_in_df = input_df[address_col].dropna().astype(str).unique()
-    
     if len(unique_addresses_in_df) == 0:
         st.info("No valid (non-empty) addresses found to geocode in the main file.")
         return input_df, {}
 
     st.write(f"Found {len(unique_addresses_in_df)} unique addresses in the main file to process...")
     progress_bar = st.progress(0)
-    
     address_to_coords = {}
     api_calls_made = 0
     found_in_lookup = 0
@@ -105,7 +91,6 @@ def batch_geocode_dataframe(input_df, address_col, lookup_data=None):
             lookup_data_copy = lookup_data.copy()
             lookup_data_copy[address_col] = lookup_data_copy[address_col].astype(str)
             lookup_data_copy.dropna(subset=[address_col, 'Latitude', 'Longitude'], inplace=True)
-            
             lookup_dict = pd.Series(
                 list(zip(lookup_data_copy['Latitude'], lookup_data_copy['Longitude'])),
                 index=lookup_data_copy[address_col]
@@ -118,15 +103,14 @@ def batch_geocode_dataframe(input_df, address_col, lookup_data=None):
         if addr_str in lookup_dict:
             lat, lon = lookup_dict[addr_str]
             if pd.notna(lat) and pd.notna(lon):
-                 address_to_coords[addr_str] = (float(lat), float(lon))
-                 found_in_lookup +=1
-            else: 
-                 address_to_coords[addr_str] = geocode_address_via_api(addr_str)
-                 if address_to_coords[addr_str] != (None, None): api_calls_made += 1
+                address_to_coords[addr_str] = (float(lat), float(lon))
+                found_in_lookup += 1
+            else:
+                address_to_coords[addr_str] = geocode_address_via_api(addr_str)
+                if address_to_coords[addr_str] != (None, None): api_calls_made += 1
         else:
             address_to_coords[addr_str] = geocode_address_via_api(addr_str)
             if address_to_coords[addr_str] != (None, None): api_calls_made += 1
-        
         progress_bar.progress((i + 1) / len(unique_addresses_in_df))
 
     success_count = sum(1 for lat, lon in address_to_coords.values() if lat is not None and lon is not None)
@@ -137,7 +121,6 @@ def batch_geocode_dataframe(input_df, address_col, lookup_data=None):
     df_with_coords = input_df.copy()
     df_with_coords['Latitude'] = df_with_coords[address_col].astype(str).map(lambda x: address_to_coords.get(x, (None, None))[0])
     df_with_coords['Longitude'] = df_with_coords[address_col].astype(str).map(lambda x: address_to_coords.get(x, (None, None))[1])
-    
     return df_with_coords, address_to_coords
 
 def load_data(uploaded_file_obj):
@@ -150,7 +133,6 @@ def load_data(uploaded_file_obj):
         else:
             st.error("Unsupported file format. Please upload a CSV or Excel file.")
             return None
-        
         if df is not None:
             df.columns = df.columns.str.strip()
         return df
@@ -201,10 +183,8 @@ if uploaded_file:
     current_main_file_id = getattr(uploaded_file, 'file_id', uploaded_file.name + str(uploaded_file.size))
     if st.session_state.df is None or not hasattr(uploaded_file, '_uploaded_file_id_main') or \
        (hasattr(uploaded_file, '_uploaded_file_id_main') and st.session_state.get('_last_uploaded_main_file_id') != current_main_file_id):
-        
         with st.spinner("Loading main data..."):
             st.session_state.df = load_data(uploaded_file)
-        
         if st.session_state.df is not None:
             st.success("Main spreadsheet loaded successfully!")
             st.session_state.geocoding_done = False
@@ -240,7 +220,7 @@ if st.session_state.geocoding_done and st.session_state.geocoded_df is not None:
     current_df_to_use = st.session_state.geocoded_df.copy()
 
 if current_df_to_use is not None:
-    df_display = current_df_to_use.copy() # Ensure df_display is a mutable copy for this run
+    df_display = current_df_to_use.copy()
 
     st.image(LOGO_URL, width=200)
     st.markdown("---")
@@ -250,37 +230,44 @@ if current_df_to_use is not None:
     max_date_for_filter = None
 
     if DATE_COLUMN_NAME in df_display.columns:
-        date_series_original = df_display[DATE_COLUMN_NAME] # Work directly on the series from df_display
-        
-        if not date_series_original.isnull().all():
+        date_series_original = df_display[DATE_COLUMN_NAME]
+        # Replace possible invalids
+        date_series_original = date_series_original.replace([0, '0', '', ' '], pd.NA)
+
+        def parse_mixed_dates(val):
+            if pd.isnull(val) or val == '':
+                return pd.NaT
             try:
-                parsed_dates = pd.to_datetime(date_series_original, infer_datetime_format=True, errors='coerce')
+                # Try string date first (dayfirst for Europe)
+                return pd.to_datetime(val, dayfirst=True, errors='raise')
+            except Exception:
+                try:
+                    v = float(val)
+                    # Excel serial date (typically > 40000 for recent years)
+                    if v > 40000:
+                        return pd.to_datetime('1899-12-30') + pd.to_timedelta(v, 'D')
+                    # Unix timestamp
+                    if v > 1000000000:
+                        return pd.to_datetime(int(v), unit='s')
+                except Exception:
+                    pass
+            return pd.NaT
 
+        parsed_dates = date_series_original.apply(parse_mixed_dates)
+        df_display[DATE_COLUMN_NAME] = parsed_dates
+        df_display.dropna(subset=[DATE_COLUMN_NAME], inplace=True)
 
-                if not parsed_dates.isnull().all():
-                    # Update the specific column in df_display, not the whole df_display yet
-                    df_display.loc[:, DATE_COLUMN_NAME] = parsed_dates 
-                    # Drop rows with NaT dates from df_display
-                    df_display.dropna(subset=[DATE_COLUMN_NAME], inplace=True)
-                    
-                    if not df_display.empty:
-                        min_dt_val_series = df_display[DATE_COLUMN_NAME].min()
-                        max_dt_val_series = df_display[DATE_COLUMN_NAME].max()
-
-                        if pd.notna(min_dt_val_series) and pd.notna(max_dt_val_series):
-                            min_date_for_filter = min_dt_val_series.date()
-                            max_date_for_filter = max_dt_val_series.date()
-                            date_column_valid = True 
-                        else:
-                            st.warning(f"Could not determine a valid min/max date from '{DATE_COLUMN_NAME}' after parsing. Date filtering disabled.")
-                    else:
-                        st.warning(f"No valid dates remained in '{DATE_COLUMN_NAME}' after parsing and cleaning. Date filtering disabled.")
-                else:
-                    st.warning(f"Could not parse any valid dates in '{DATE_COLUMN_NAME}'. Please check format (e.g., dd/mm/yyyy). Date filtering disabled.")
-            except Exception as e:
-                st.warning(f"Error processing '{DATE_COLUMN_NAME}' column: {e}. Date filtering may be unavailable.")
+        if not df_display.empty:
+            min_dt_val_series = df_display[DATE_COLUMN_NAME].min()
+            max_dt_val_series = df_display[DATE_COLUMN_NAME].max()
+            if pd.notna(min_dt_val_series) and pd.notna(max_dt_val_series):
+                min_date_for_filter = min_dt_val_series.date()
+                max_date_for_filter = max_dt_val_series.date()
+                date_column_valid = True
+            else:
+                st.warning(f"Could not determine a valid min/max date from '{DATE_COLUMN_NAME}' after parsing. Date filtering disabled.")
         else:
-            st.info(f"'{DATE_COLUMN_NAME}' column is present but contains all empty/null values. Date filtering disabled.")
+            st.warning(f"No valid dates remained in '{DATE_COLUMN_NAME}' after parsing and cleaning. Date filtering disabled.")
     else:
         st.info(f"'{DATE_COLUMN_NAME}' column not found. Date filtering disabled.")
     
@@ -294,7 +281,7 @@ if current_df_to_use is not None:
         if min_date_for_filter > max_date_for_filter:
             st.sidebar.warning(f"Min date ({min_date_for_filter}) is after max date ({max_date_for_filter}). Swapping for filter.")
             default_start_date, default_end_date = max_date_for_filter, min_date_for_filter
-        
+
         current_value_for_widget = (default_start_date, default_end_date)
         if 'date_filter' in st.session_state and \
            isinstance(st.session_state.date_filter, tuple) and \
@@ -304,7 +291,7 @@ if current_df_to_use is not None:
                 clamped_prev_start = max(min_date_for_filter, min(prev_start, max_date_for_filter))
                 clamped_prev_end = max(min_date_for_filter, min(prev_end, max_date_for_filter))
                 if clamped_prev_start <= clamped_prev_end:
-                     current_value_for_widget = (clamped_prev_start, clamped_prev_end)
+                    current_value_for_widget = (clamped_prev_start, clamped_prev_end)
         try:
             selected_date_range = st.sidebar.date_input(
                 "Select Date Range",
@@ -340,14 +327,12 @@ if current_df_to_use is not None:
     else:
         st.sidebar.info(f"'{THEME_COLUMN_NAME}' column not available/valid for filtering.")
 
-    filtered_df_display = df_display.copy() # Start with the (potentially date-cleaned) df_display
+    filtered_df_display = df_display.copy()
 
     if selected_date_range and date_column_valid and len(selected_date_range) == 2:
         try:
             start_date = pd.to_datetime(selected_date_range[0])
             end_date = pd.to_datetime(selected_date_range[1])
-            # Ensure the column being filtered is also datetime
-            # This was already done when df_display[DATE_COLUMN_NAME] was cleaned
             if DATE_COLUMN_NAME in filtered_df_display and pd.api.types.is_datetime64_any_dtype(filtered_df_display[DATE_COLUMN_NAME]):
                 filtered_df_display = filtered_df_display[
                     (filtered_df_display[DATE_COLUMN_NAME] >= start_date) &
@@ -357,10 +342,10 @@ if current_df_to_use is not None:
                 st.warning(f"Cannot apply date filter as '{DATE_COLUMN_NAME}' is not in the expected datetime format in the filtered data.")
         except Exception as e:
             st.error(f"Error applying date filter: {e}")
-    
+
     if selected_divisions and DIVISION_COLUMN_NAME in filtered_df_display.columns:
         filtered_df_display = filtered_df_display[filtered_df_display[DIVISION_COLUMN_NAME].isin(selected_divisions)]
-    
+
     if selected_themes and THEME_COLUMN_NAME in filtered_df_display.columns:
         filtered_df_display = filtered_df_display[filtered_df_display[THEME_COLUMN_NAME].isin(selected_themes)]
 
@@ -389,29 +374,25 @@ if current_df_to_use is not None:
             st.plotly_chart(fig_division, use_container_width=True)
         else:
             st.info(f"No data to display for {DIVISION_COLUMN_NAME} based on current filters or column not found.")
-    
+
     st.markdown("---")
 
     st.header("Location Map")
     if 'Latitude' in filtered_df_display.columns and 'Longitude' in filtered_df_display.columns:
         map_df = filtered_df_display.dropna(subset=['Latitude', 'Longitude'])
-        
         if not map_df.empty:
             map_center_lat = map_df['Latitude'].mean()
             map_center_lon = map_df['Longitude'].mean()
             m = folium.Map(location=[map_center_lat, map_center_lon], zoom_start=6)
-
             points_to_plot = map_df.head(1000)
             if len(map_df) > 1000:
                 st.info(f"Displaying the first 1000 out of {len(map_df)} geocoded points on the map for performance.")
-
             for idx, row in points_to_plot.iterrows():
                 popup_text = f"<b>{ADDRESS_COLUMN_NAME}:</b> {row.get(ADDRESS_COLUMN_NAME, 'N/A')}"
                 if THEME_COLUMN_NAME in row and pd.notna(row[THEME_COLUMN_NAME]):
                     popup_text += f"<br><b>{THEME_COLUMN_NAME}:</b> {row[THEME_COLUMN_NAME]}"
                 if DIVISION_COLUMN_NAME in row and pd.notna(row[DIVISION_COLUMN_NAME]):
                     popup_text += f"<br><b>{DIVISION_COLUMN_NAME}:</b> {row[DIVISION_COLUMN_NAME]}"
-                
                 folium.Marker(
                     location=[row['Latitude'], row['Longitude']],
                     popup=folium.Popup(popup_text, max_width=300),
@@ -419,21 +400,20 @@ if current_df_to_use is not None:
                 ).add_to(m)
             st_folium(m, width='100%', height=500, key="folium_map")
         elif ADDRESS_COLUMN_NAME not in df_display.columns:
-             st.info(f"The '{ADDRESS_COLUMN_NAME}' column was not found, so the map cannot be generated.")
+            st.info(f"The '{ADDRESS_COLUMN_NAME}' column was not found, so the map cannot be generated.")
         elif not filtered_df_display.empty and map_df.empty:
             st.warning("No valid geocoded locations to display on the map for the current filter selection, or all addresses failed/yielded no coordinates.")
         else: 
             st.info("Apply filters or upload data with addresses to see locations on the map.")
     else: 
         if ADDRESS_COLUMN_NAME in df_display.columns:
-             st.info("Map will appear once addresses are processed and geocoded successfully.")
+            st.info("Map will appear once addresses are processed and geocoded successfully.")
 
     if st.session_state.get('geocoded_pairs_for_download'):
         dl_df_data = []
         for addr, (lat, lon) in st.session_state.geocoded_pairs_for_download.items():
             if lat is not None and lon is not None:
                 dl_df_data.append({ADDRESS_COLUMN_NAME: addr, 'Latitude': lat, 'Longitude': lon})
-        
         if dl_df_data:
             downloadable_df = pd.DataFrame(dl_df_data)
             csv_export = downloadable_df.to_csv(index=False).encode('utf-8')
@@ -467,7 +447,6 @@ if st.session_state.df is not None or st.session_state.geocoded_df is not None:
         st.session_state.geocoding_done = False
         st.session_state.geocoded_pairs_for_download = {}
         st.session_state.file_uploader_key += 1
-        
         st.session_state.lookup_df = None
         if 'lookup_uploader' in st.session_state:
             st.session_state.lookup_uploader = None 
@@ -475,7 +454,6 @@ if st.session_state.df is not None or st.session_state.geocoded_df is not None:
             del st.session_state['_last_lookup_file_id']
         if '_last_uploaded_main_file_id' in st.session_state:
             del st.session_state['_last_uploaded_main_file_id']
-            
         keys_to_clear_from_session = [
             "date_filter", "theme_filter", "division_filter", 
             "show_data_table", "folium_map"
@@ -483,6 +461,5 @@ if st.session_state.df is not None or st.session_state.geocoded_df is not None:
         for key in keys_to_clear_from_session:
             if key in st.session_state:
                 del st.session_state[key]
-        
         st.success("Application reset. Please upload new files.")
         st.rerun()
