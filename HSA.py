@@ -21,10 +21,10 @@ except ImportError:
 
 # --- Configuration ---
 LOGO_URL = "https://www.esther.ie/wp-content/uploads/2022/05/HSE-Logo-Green-NEW-no-background.png"
-ADDRESS_COLUMN_NAME = "Address" # IMPORTANT: Change if your address column has a different name
-DATE_COLUMN_NAME = "Date"
+ADDRESS_COLUMN_NAME = "Site Address " # IMPORTANT: Change if your address column has a different name
+DATE_COLUMN_NAME = "Date of Inspection"
 THEME_COLUMN_NAME = "Theme"
-DIVISION_COLUMN_NAME = "Division"
+DIVISION_COLUMN_NAME = "Division "
 
 # Page configuration
 st.set_page_config(layout="wide", page_title="Spreadsheet Analysis Dashboard with Map")
